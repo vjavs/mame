@@ -1307,11 +1307,12 @@ WRITE8_MEMBER( geneve_mapper_device::write_to_pfm )
     This decoding will later be used in the READ/WRITE member functions. Also,
     we initiate wait state creation here.
 */
-SETOFFSET_MEMBER( geneve_mapper_device::setoffset )
+READ8_MEMBER( geneve_mapper_device::setoffset )
 {
 	LOGMASKED(LOG_DETAIL, "setoffset = %04x\n", offset);
 	m_debug_no_ws = false;
 	decode(space, offset, m_read_mode, &m_decoded);
+	return 0;
 }
 
 /*

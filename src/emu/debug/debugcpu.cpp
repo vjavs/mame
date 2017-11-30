@@ -1679,42 +1679,6 @@ void device_debug::instruction_hook(offs_t curpc)
 
 
 //-------------------------------------------------
-//  memory_read_hook - the memory system calls
-//  this hook when watchpoints are enabled and a
-//  memory read happens
-//-------------------------------------------------
-
-void device_debug::memory_read_hook(address_space &space, offs_t address, u64 mem_mask)
-{
-	// check watchpoints
-	watchpoint_check(space, WATCHPOINT_READ, address, 0, mem_mask);
-
-	// check hotspots
-	if (!m_hotspots.empty())
-		hotspot_check(space, address);
-}
-
-
-//-------------------------------------------------
-//  memory_write_hook - the memory system calls
-//  this hook when watchpoints are enabled and a
-//  memory write happens
-//-------------------------------------------------
-
-void device_debug::memory_write_hook(address_space &space, offs_t address, u64 data, u64 mem_mask)
-{
-	if (m_track_mem)
-	{
-		dasm_memory_access const newAccess(space.spacenum(), address, data, history_pc(0));
-		std::pair<std::set<dasm_memory_access>::iterator, bool> trackedAccess = m_track_mem_set.insert(newAccess);
-		if (!trackedAccess.second)
-			trackedAccess.first->m_pc = newAccess.m_pc;
-	}
-	watchpoint_check(space, WATCHPOINT_WRITE, address, data, mem_mask);
-}
-
-
-//-------------------------------------------------
 //  set_instruction_hook - set a hook to be
 //  called on each instruction for a given device
 //-------------------------------------------------
@@ -2015,22 +1979,16 @@ void device_debug::breakpoint_enable_all(bool enable)
 //  returning its index
 //-------------------------------------------------
 
-int device_debug::watchpoint_set(address_space &space, int type, offs_t address, offs_t length, const char *condition, const char *action)
+int device_debug::watchpoint_set(address_space &space, read_or_write type, offs_t address, offs_t length, const char *condition, const char *action)
 {
 	if (space.spacenum() >= int(m_wplist.size()))
-		m_wplist.resize(space.spacenum()+1, nullptr);
+		m_wplist.resize(space.spacenum()+1);
 
 	// allocate a new one
 	u32 id = m_device.machine().debugger().cpu().get_watchpoint_index();
-	watchpoint *wp = auto_alloc(m_device.machine(), watchpoint(this, m_symtable, id, space, type, address, length, condition, action));
+	m_wplist[space.spacenum()].emplace_back(std::make_unique<watchpoint>(this, m_symtable, id, space, type, address, length, condition, action));
 
-	// hook it into our list
-	wp->m_next = m_wplist[space.spacenum()];
-	m_wplist[space.spacenum()] = wp;
-
-	// update the flags and return the index
-	watchpoint_update_flags(wp->m_space);
-	return wp->m_index;
+	return id;
 }
 
 
@@ -2042,17 +2000,15 @@ int device_debug::watchpoint_set(address_space &space, int type, offs_t address,
 bool device_debug::watchpoint_clear(int index)
 {
 	// scan the list to see if we own this breakpoint
-	for (int spacenum = 0; spacenum < int(m_wplist.size()); ++spacenum)
-		for (watchpoint **wp = &m_wplist[spacenum]; *wp != nullptr; wp = &(*wp)->m_next)
-			if ((*wp)->m_index == index)
+	for (auto &wpl : m_wplist)
+	{
+		for (auto wpi = wpl.begin(); wpi != wpl.end(); wpi++)
+			if ((*wpi)->index() == index)
 			{
-				watchpoint *deleteme = *wp;
-				address_space &space = deleteme->m_space;
-				*wp = deleteme->m_next;
-				auto_free(m_device.machine(), deleteme);
-				watchpoint_update_flags(space);
+				wpl.erase(wpi);
 				return true;
 			}
+	}
 
 	// we don't own it, return false
 	return false;
@@ -2065,10 +2021,8 @@ bool device_debug::watchpoint_clear(int index)
 
 void device_debug::watchpoint_clear_all()
 {
-	// clear the head until we run out
-	for (int spacenum = 0; spacenum < int(m_wplist.size()); ++spacenum)
-		while (m_wplist[spacenum] != nullptr)
-			watchpoint_clear(m_wplist[spacenum]->index());
+	for (auto &wpl : m_wplist)
+		wpl.clear();
 }
 
 
@@ -2080,12 +2034,11 @@ void device_debug::watchpoint_clear_all()
 bool device_debug::watchpoint_enable(int index, bool enable)
 {
 	// scan the list to see if we own this watchpoint
-	for (int spacenum = 0; spacenum < int(m_wplist.size()); ++spacenum)
-		for (watchpoint *wp = m_wplist[spacenum]; wp != nullptr; wp = wp->next())
-			if (wp->m_index == index)
+	for (auto &wpl : m_wplist)
+		for (auto &wp : wpl)
+			if (wp->index() == index)
 			{
-				wp->m_enabled = enable;
-				watchpoint_update_flags(wp->m_space);
+				wp->setEnabled(enable);
 				return true;
 			}
 
@@ -2102,9 +2055,9 @@ bool device_debug::watchpoint_enable(int index, bool enable)
 void device_debug::watchpoint_enable_all(bool enable)
 {
 	// apply the enable to all watchpoints we own
-	for (int spacenum = 0; spacenum < int(m_wplist.size()); ++spacenum)
-		for (watchpoint *wp = m_wplist[spacenum]; wp != nullptr; wp = wp->next())
-			watchpoint_enable(wp->index(), enable);
+	for (auto &wpl : m_wplist)
+		for (auto &wp : wpl)
+			wp->setEnabled(enable);
 }
 
 
@@ -2218,10 +2171,6 @@ void device_debug::hotspot_track(int numspots, int threshhold)
 		// fill in the info
 		m_hotspot_threshhold = threshhold;
 	}
-
-	// update the watchpoint flags to include us
-	if (m_memory != nullptr && m_memory->has_space(AS_PROGRAM))
-		watchpoint_update_flags(m_memory->space(AS_PROGRAM));
 }
 
 
@@ -2596,138 +2545,9 @@ void device_debug::breakpoint_check(offs_t pc)
 
 
 //-------------------------------------------------
-//  watchpoint_update_flags - update the device's
-//  watchpoint flags
-//-------------------------------------------------
-
-void device_debug::watchpoint_update_flags(address_space &space)
-{
-	// if hotspots are enabled, turn on all reads
-	bool enableread = false;
-	if (!m_hotspots.empty())
-		enableread = true;
-
-	// see if there are any enabled breakpoints
-	bool enablewrite = false;
-	if (space.spacenum() < int(m_wplist.size()))
-		for (watchpoint *wp = m_wplist[space.spacenum()]; wp != nullptr; wp = wp->m_next)
-			if (wp->m_enabled)
-			{
-				if (wp->m_type & WATCHPOINT_READ)
-					enableread = true;
-				if (wp->m_type & WATCHPOINT_WRITE)
-					enablewrite = true;
-			}
-
-	// push the flags out globally
-	space.enable_read_watchpoints(enableread);
-	space.enable_write_watchpoints(enablewrite);
-}
-
-
-//-------------------------------------------------
 //  watchpoint_check - check the watchpoints
 //  for a given CPU and address space
 //-------------------------------------------------
-
-void device_debug::watchpoint_check(address_space& space, int type, offs_t address, u64 value_to_write, u64 mem_mask)
-{
-	m_device.machine().debugger().cpu().watchpoint_check(space, type, address, value_to_write, mem_mask, m_wplist);
-}
-
-void debugger_cpu::watchpoint_check(address_space& space, int type, offs_t address, u64 value_to_write, u64 mem_mask, std::vector<device_debug::watchpoint *> &wplist)
-{
-	// if we're within debugger code, don't stop
-	if (m_within_instruction_hook || m_machine.side_effects_disabled())
-		return;
-
-	m_within_instruction_hook = true;
-
-	// adjust address, size & value_to_write based on mem_mask.
-	offs_t size = 0;
-	if (mem_mask != 0)
-	{
-		int bus_size = space.data_width() / 8;
-		int address_offset = 0;
-
-		while (address_offset < bus_size && (mem_mask & 0xff) == 0)
-		{
-			address_offset++;
-			value_to_write >>= 8;
-			mem_mask >>= 8;
-		}
-
-		while (mem_mask != 0)
-		{
-			size++;
-			mem_mask >>= 8;
-		}
-
-		// (1<<(size*8))-1 won't work when size is 8; let's just use a lut
-		static const u64 masks[] = {
-				0x0U,
-				0xffU,
-				0xffffU,
-				0xffffffU,
-				0xffffffffU,
-				0xffffffffffU,
-				0xffffffffffffU,
-				0xffffffffffffffU,
-				0xffffffffffffffffU};
-		value_to_write &= masks[size];
-
-		if (space.endianness() == ENDIANNESS_LITTLE)
-			address += address_offset;
-		else
-			address += bus_size - size - address_offset;
-	}
-
-	// if we are a write watchpoint, stash the value that will be written
-	m_wpaddr = address;
-	if (type & WATCHPOINT_WRITE)
-		m_wpdata = value_to_write;
-
-	// see if we match
-	if (space.spacenum() < int(wplist.size()))
-		for (device_debug::watchpoint *wp = wplist[space.spacenum()]; wp != nullptr; wp = wp->next())
-			if (wp->hit(type, address, size))
-			{
-				// halt in the debugger by default
-				m_execution_state = exec_state::STOPPED;
-
-				// if we hit, evaluate the action
-				if (!wp->action().empty())
-					m_machine.debugger().console().execute_command(wp->action(), false);
-
-				// print a notification, unless the action made us go again
-				if (m_execution_state == exec_state::STOPPED)
-				{
-					static const char *const sizes[] =
-					{
-						"0bytes", "byte", "word", "3bytes", "dword", "5bytes", "6bytes", "7bytes", "qword"
-					};
-					offs_t pc = space.device().state().pcbase();
-					std::string buffer;
-
-					if (type & WATCHPOINT_WRITE)
-					{
-						buffer = string_format("Stopped at watchpoint %X writing %s to %08X (PC=%X)", wp->index(), sizes[size], address, pc);
-						if (value_to_write >> 32)
-							buffer.append(string_format(" (data=%X%08X)", u32(value_to_write >> 32), u32(value_to_write)));
-						else
-							buffer.append(string_format(" (data=%X)", u32(value_to_write)));
-					}
-					else
-						buffer = string_format("Stopped at watchpoint %X reading %s from %08X (PC=%X)", wp->index(), sizes[size], address, pc);
-					m_machine.debugger().console().printf("%s\n", buffer.c_str());
-					space.device().debug()->compute_debug_flags();
-				}
-				break;
-			}
-
-	m_within_instruction_hook = false;
-}
-
 
 //-------------------------------------------------
 //  hotspot_check - check for hotspots on a
@@ -2917,13 +2737,12 @@ device_debug::watchpoint::watchpoint(device_debug* debugInterface,
 										symbol_table &symbols,
 										int index,
 										address_space &space,
-										int type,
+										read_or_write type,
 										offs_t address,
 										offs_t length,
 										const char *condition,
 										const char *action)
 	: m_debugInterface(debugInterface),
-		m_next(nullptr),
 		m_space(space),
 		m_index(index),
 		m_enabled(true),
@@ -2934,41 +2753,6 @@ device_debug::watchpoint::watchpoint(device_debug* debugInterface,
 		m_action((action != nullptr) ? action : "")
 {
 }
-
-
-//-------------------------------------------------
-//  hit - detect a hit
-//-------------------------------------------------
-
-bool device_debug::watchpoint::hit(int type, offs_t address, int size)
-{
-	// don't hit if disabled
-	if (!m_enabled)
-		return false;
-
-	// must match the type
-	if ((m_type & type) == 0)
-		return false;
-
-	// must match our address
-	if (address + size <= m_address || address >= m_address + m_length)
-		return false;
-
-	// must satisfy the condition
-	if (!m_condition.is_empty())
-	{
-		try
-		{
-			return (m_condition.execute() != 0);
-		}
-		catch (expression_error &)
-		{
-			return false;
-		}
-	}
-	return true;
-}
-
 
 
 //**************************************************************************
