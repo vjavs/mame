@@ -892,8 +892,8 @@ memory_bank *memory_manager::allocate(address_space &space, offs_t addrstart, of
 address_space::address_space(memory_manager &manager, device_memory_interface &memory, int spacenum)
 	: m_config(*memory.space_config(spacenum)),
 		m_device(memory.device()),
-		m_addrmask(0xffffffffUL >> (32 - m_config.m_addr_width)),
-		m_logaddrmask(0xffffffffUL >> (32 - m_config.m_logaddr_width)),
+		m_addrmask(make_bitmask<offs_t>(m_config.m_addr_width)),
+		m_logaddrmask(make_bitmask<offs_t>(m_config.m_logaddr_width)),
 		m_unmap(0),
 		m_spacenum(spacenum),
 		m_log_unmap(true),
@@ -1131,7 +1131,12 @@ void address_space::prepare_map()
 	// extract global parameters specified by the map
 	m_unmap = (m_map->m_unmapval == 0) ? 0 : ~0;
 	if (m_map->m_globalmask != 0)
+	{
+		if (m_map->m_globalmask & ~m_addrmask)
+			fatalerror("Can't set a global address mask of %08x on a %d-bits address width bus.\n", m_map->m_globalmask, addr_width());
+
 		m_addrmask = m_map->m_globalmask;
+	}
 
 	// make a pass over the address map, adjusting for the device and getting memory pointers
 	for (address_map_entry &entry : m_map->m_entrylist)
