@@ -376,26 +376,26 @@ MACHINE_CONFIG_START(_2mindril_state::drill)
 	MCFG_MACHINE_START_OVERRIDE(_2mindril_state,drill)
 	MCFG_MACHINE_RESET_OVERRIDE(_2mindril_state,drill)
 
-	MCFG_SCREEN_ADD("screen", RASTER)
-	MCFG_SCREEN_REFRESH_RATE(60)
-	MCFG_SCREEN_VBLANK_TIME(ATTOSECONDS_IN_USEC(2500)) /* inaccurate, same as Taito F3? (needs screen raw params anyway) */
-	MCFG_SCREEN_SIZE(40*8+48*2, 32*8)
-	MCFG_SCREEN_VISIBLE_AREA(46, 40*8-1 + 46, 24, 24+224-1)
-	MCFG_SCREEN_UPDATE_DRIVER(_2mindril_state, screen_update_f3)
-	MCFG_SCREEN_VBLANK_CALLBACK(WRITELINE(*this, _2mindril_state, screen_vblank_f3))
+	screen_device &screen(SCREEN(config, "screen", SCREEN_TYPE_RASTER));
+	screen.set_refresh_hz(60);
+	screen.set_vblank_time(ATTOSECONDS_IN_USEC(2500)); // inaccurate, same as Taito F3? (needs screen raw params anyway)
+	screen.set_size(40*8+48*2, 32*8);
+	screen.set_visarea(46, 40*8-1 + 46, 24, 24+224-1);
+	screen.set_screen_update(FUNC(_2mindril_state::screen_update_f3));
+	screen.screen_vblank().set(FUNC(_2mindril_state::screen_vblank_f3));
 
-	MCFG_PALETTE_ADD("palette", 0x2000)
+	MCFG_PALETTE_ADD(m_palette, 0x2000);
 	MCFG_PALETTE_FORMAT(RRRRGGGGBBBBRGBx)
 
 	SPEAKER(config, "lspeaker").front_left();
 	SPEAKER(config, "rspeaker").front_right();
 
-	MCFG_DEVICE_ADD("ymsnd", YM2610B, 16000000/2)
-	MCFG_YM2610_IRQ_HANDLER(WRITELINE(*this, _2mindril_state, irqhandler))
-	MCFG_SOUND_ROUTE(0, "lspeaker",  0.25)
-	MCFG_SOUND_ROUTE(0, "rspeaker", 0.25)
-	MCFG_SOUND_ROUTE(1, "lspeaker",  1.0)
-	MCFG_SOUND_ROUTE(2, "rspeaker", 1.0)
+	ym2610b_device &ymsnd(YM2610B(config, "ymsnd", 16_MHz_XTAL/2));
+	ymsnd.irq_handler().set(FUNC(_2mindril_state::irqhandler));
+	ymsnd.add_route(0, "lspeaker", 0.25);
+	ymsnd.add_route(0, "rspeaker", 0.25);
+	ymsnd.add_route(1, "lspeaker", 1.0);
+	ymsnd.add_route(2, "rspeaker", 1.0);
 MACHINE_CONFIG_END
 
 

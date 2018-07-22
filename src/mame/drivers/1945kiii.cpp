@@ -380,21 +380,21 @@ void k3_state::machine_start()
 
 MACHINE_CONFIG_START(k3_state::flagrall)
 
-	MCFG_DEVICE_ADD("maincpu", M68000, MASTER_CLOCK ) // ?
+	MCFG_DEVICE_ADD(m_maincpu, M68000, MASTER_CLOCK ) // ?
 	MCFG_DEVICE_PROGRAM_MAP(flagrall_map)
 	MCFG_DEVICE_VBLANK_INT_DRIVER("screen", k3_state,  irq4_line_hold)
 
-	MCFG_DEVICE_ADD("gfxdecode", GFXDECODE, "palette", gfx_1945kiii)
+	MCFG_DEVICE_ADD("gfxdecode", GFXDECODE, m_palette, gfx_1945kiii)
 
-	MCFG_SCREEN_ADD("screen", RASTER)
-	MCFG_SCREEN_REFRESH_RATE(60)
-	MCFG_SCREEN_VBLANK_TIME(ATTOSECONDS_IN_USEC(0))
-	MCFG_SCREEN_SIZE(64*8, 32*8)
-	MCFG_SCREEN_VISIBLE_AREA(0*8, 40*8-1, 0*8, 30*8-1)
-	MCFG_SCREEN_UPDATE_DRIVER(k3_state, screen_update)
-	MCFG_SCREEN_PALETTE("palette")
+	screen_device &screen(SCREEN(config, "screen", SCREEN_TYPE_RASTER));
+	screen.set_refresh_hz(60);
+	screen.set_vblank_time(ATTOSECONDS_IN_USEC(0));
+	screen.set_size(64*8, 32*8);
+	screen.set_visarea(0*8, 40*8-1, 0*8, 30*8-1);
+	screen.set_screen_update(FUNC(k3_state::screen_update));
+	screen.set_palette(m_palette);
 
-	MCFG_PALETTE_ADD("palette", 0x200)
+	MCFG_PALETTE_ADD(m_palette, 0x200)
 	MCFG_PALETTE_FORMAT(xBBBBBGGGGGRRRRR)
 
 	SPEAKER(config, "mono").front_center();
